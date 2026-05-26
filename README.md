@@ -174,6 +174,12 @@ Outputs are saved under `--out-dir`:
 - `depth_npy/*.npy`: float32 depth in meters (when `--save-npy`)
 - `vis/*_vis.jpg`: RGB + depth heatmap with **meter colorbar and numeric stats** (when `--vis`)
 
+If you want the output filenames/extensions and subfolder structure to match your original inputs, use:
+
+```bash
+python demo/demo_dac_outdoor.py --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --vis --mirror-input-tree --recursive
+```
+
 If your pinhole images are **not undistorted**, fill in the distortion coefficients in the intrinsics JSON and enable undistortion:
 
 ```bash
