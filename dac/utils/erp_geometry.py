@@ -126,10 +126,14 @@ def cam_to_erp_patch_fast(img, depth, mask_valid_depth, theta, phi, patch_h, pat
     hFOV_tgt = patch_h / erp_h * PI
 
     # only target patch erp coordinates
-    cp = torch.tensor([theta, phi]).view(1, 1, -1)
+    theta_f = float(theta)
+    phi_f = float(phi)
+    cp = torch.as_tensor(np.array([theta_f, phi_f], dtype=np.float32)).view(1, 1, -1)
     lat_grid, lon_grid = torch.meshgrid(
-        torch.linspace(phi - hFOV_tgt/2, phi + hFOV_tgt/2, patch_h),
-        torch.linspace(theta - wFOV_tgt/2, theta + wFOV_tgt/2, patch_w))
+        torch.linspace(phi_f - hFOV_tgt / 2, phi_f + hFOV_tgt / 2, patch_h),
+        torch.linspace(theta_f - wFOV_tgt / 2, theta_f + wFOV_tgt / 2, patch_w),
+        indexing="ij",
+    )
     lon_grid = lon_grid.float().reshape(1, -1)  # .repeat(num_rows*num_cols, 1)
     lat_grid = lat_grid.float().reshape(1, -1)  # .repeat(num_rows*num_cols, 1)
         
