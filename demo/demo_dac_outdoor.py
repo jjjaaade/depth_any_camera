@@ -89,6 +89,37 @@ def _ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
+def _get_radtan_distortion(cam_params: Dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Returns (K, dist) for OpenCV radtan model: [k1, k2, p1, p2, k3].
+    """
+    required = ("fx", "fy", "cx", "cy")
+    for k in required:
+        if k not in cam_params:
+            raise ValueError(f"Missing '{k}' in intrinsics JSON")
+
+    k1 = float(cam_params.get("k1", 0.0))
+    k2 = float(cam_params.get("k2", 0.0))
+    p1 = float(cam_params.get("p1", 0.0))
+    p2 = float(cam_params.get("p2", 0.0))
+    k3 = float(cam_params.get("k3", 0.0))
+    dist = np.array([k1, k2, p1, p2, k3], dtype=np.float32)
+
+    k_mat = np.array(
+        [
+            [float(cam_params["fx"]), 0.0, float(cam_params["cx"])],
+            [0.0, float(cam_params["fy"]), float(cam_params["cy"])],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    return k_mat, dist
+
+
+def _has_nonzero_distortion(dist: np.ndarray, eps: float = 1e-12) -> bool:
+    return bool(np.any(np.abs(dist.astype(np.float64)) > eps))
+
+
 def _load_intrinsics_json(path: str) -> Dict[str, Any]:
     with open(path, "r") as f:
         intr = json.load(f)
@@ -163,6 +194,42 @@ def _undistort_pinhole_if_needed(image_rgb: np.ndarray, cam_params: Dict[str, An
     updated["cy"] = float(new_k[1, 2])
     updated["camera_model"] = "PINHOLE"
     return undistorted, updated
+
+
+def _undistort_pinhole(
+    image_rgb: np.ndarray, cam_params: Dict[str, Any], args: argparse.Namespace
+) -> tuple[np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Undistort (OpenCV radtan) and return:
+        undistorted_image, updated_cam_params, K_raw, dist, K_new
+    """
+    k_raw, dist = _get_radtan_distortion(cam_params)
+    h, w = image_rgb.shape[:2]
+    k_new = k_raw
+    if args.undistort_optimal:
+        k_new, _ = cv2.getOptimalNewCameraMatrix(k_raw, dist, (w, h), alpha=args.undistort_alpha, newImgSize=(w, h))
+    undistorted = cv2.undistort(image_rgb, k_raw, dist, None, k_new)
+
+    updated = dict(cam_params)
+    updated["fx"] = float(k_new[0, 0])
+    updated["fy"] = float(k_new[1, 1])
+    updated["cx"] = float(k_new[0, 2])
+    updated["cy"] = float(k_new[1, 2])
+    updated["camera_model"] = "PINHOLE"
+    return undistorted, updated, k_raw, dist, k_new
+
+
+def _build_distorted_to_undistorted_map(k_raw: np.ndarray, dist: np.ndarray, k_new: np.ndarray, out_h: int, out_w: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build maps for cv2.remap where:
+        dst(distorted) = remap(src(undistorted), map_x, map_y)
+    """
+    xs, ys = np.meshgrid(np.arange(out_w, dtype=np.float32), np.arange(out_h, dtype=np.float32))
+    pts = np.stack([xs, ys], axis=-1).reshape(-1, 1, 2)
+    undist = cv2.undistortPoints(pts, k_raw, dist, P=k_new).reshape(out_h, out_w, 2)
+    map_x = undist[:, :, 0].astype(np.float32)
+    map_y = undist[:, :, 1].astype(np.float32)
+    return map_x, map_y
 
 
 def demo_one_sample(model, model_name, device, sample, cano_sz, args: argparse.Namespace):
@@ -400,15 +467,30 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         raise ValueError("--output-downscale must be > 0")
 
     print(f"Found {len(image_paths)} images in {input_dir}")
+    distort_map_x = None
+    distort_map_y = None
     for idx, image_path in enumerate(image_paths):
-        image = np.asarray(Image.open(image_path))
-        if image.ndim == 2:
-            image = np.stack([image, image, image], axis=-1)
-        if image.shape[2] == 4:
-            image = image[:, :, :3]
+        image_raw = np.asarray(Image.open(image_path))
+        if image_raw.ndim == 2:
+            image_raw = np.stack([image_raw, image_raw, image_raw], axis=-1)
+        if image_raw.shape[2] == 4:
+            image_raw = image_raw[:, :, :3]
 
-        org_img_h, org_img_w = image.shape[:2]
-        image, cam_params = _undistort_pinhole_if_needed(image, cam_params_base, args)
+        org_img_h, org_img_w = image_raw.shape[:2]
+
+        k_raw, dist = _get_radtan_distortion(cam_params_base)
+        has_dist = _has_nonzero_distortion(dist)
+        if has_dist:
+            if not args.undistort:
+                print(f"[WARN] Detected non-zero pinhole distortion in intrinsics; undistorting for inference and remapping depth back for: {os.path.basename(image_path)}")
+            image, cam_params, k_raw, dist, k_new = _undistort_pinhole(image_raw, cam_params_base, args)
+            if distort_map_x is None or distort_map_y is None or distort_map_x.shape[:2] != (int(org_img_h / args.output_downscale), int(org_img_w / args.output_downscale)):
+                out_h_tmp = int(org_img_h / args.output_downscale)
+                out_w_tmp = int(org_img_w / args.output_downscale)
+                distort_map_x, distort_map_y = _build_distorted_to_undistorted_map(k_raw, dist, k_new, out_h_tmp, out_w_tmp)
+        else:
+            image = image_raw
+            cam_params = cam_params_base
 
         # Dummy "gt depth" only to reuse the existing ERP conversion pipeline.
         depth_dummy = np.ones((image.shape[0], image.shape[1], 1), dtype=np.float32)
@@ -504,6 +586,11 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         base = os.path.splitext(os.path.basename(image_path))[0]
 
         depth_m = depth_out.squeeze().numpy().astype(np.float32)
+        active_mask_np = active_mask.squeeze().numpy().astype(np.float32)
+        if has_dist and distort_map_x is not None:
+            depth_m = cv2.remap(depth_m, distort_map_x, distort_map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            active_mask_np = cv2.remap(active_mask_np, distort_map_x, distort_map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
         depth_uint16 = np.clip(depth_m * float(args.depth_scale), 0, 65535).astype(np.uint16)
         depth_path = os.path.join(depth_dir, f"{base}.png")
         cv2.imwrite(depth_path, depth_uint16)
@@ -512,15 +599,17 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
             np.save(os.path.join(npy_dir, f"{base}.npy"), depth_m)
 
         if args.vis:
-            rgb_vis = cv2.resize(image, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+            rgb_vis = cv2.resize(image_raw, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
             normalization_stats = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
             rgb_vis_t = TF.normalize(TF.to_tensor(rgb_vis), **normalization_stats)
+            depth_vis_t = torch.from_numpy(depth_m).unsqueeze(0)
+            active_mask_t = torch.from_numpy(active_mask_np).unsqueeze(0)
             save_val_imgs_metric_values(
-                depth_out,
+                depth_vis_t,
                 rgb_vis_t,
                 f"{base}_vis.jpg",
                 vis_dir,
-                active_mask=active_mask,
+                active_mask=active_mask_t,
                 depth_max=args.vis_depth_max,
             )
 
