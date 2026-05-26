@@ -382,14 +382,11 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         _ensure_dir(vis_dir)
 
     if args.glob is not None:
-        image_paths = sorted(glob.glob(os.path.join(input_dir, args.glob), recursive=bool(args.recursive)))
+        image_paths = sorted(glob.glob(os.path.join(input_dir, args.glob)))
     else:
         image_paths = []
         for ext in SUPPORTED_IMAGE_EXTS:
-            if args.recursive:
-                image_paths.extend(glob.glob(os.path.join(input_dir, "**", f"*{ext}"), recursive=True))
-            else:
-                image_paths.extend(glob.glob(os.path.join(input_dir, f"*{ext}")))
+            image_paths.extend(glob.glob(os.path.join(input_dir, f"*{ext}")))
         image_paths = sorted(image_paths)
 
     if not image_paths:
@@ -504,39 +501,25 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
             depth_erp_gt=None,
         )
 
-        if args.mirror_input_tree:
-            rel_path = os.path.relpath(image_path, input_dir)
-            stem, in_ext = os.path.splitext(rel_path)
-        else:
-            stem, in_ext = os.path.splitext(os.path.basename(image_path))
+        base = os.path.splitext(os.path.basename(image_path))[0]
 
         depth_m = depth_out.squeeze().numpy().astype(np.float32)
         depth_uint16 = np.clip(depth_m * float(args.depth_scale), 0, 65535).astype(np.uint16)
-        depth_ext = args.depth_ext
-        if not depth_ext.startswith("."):
-            depth_ext = f".{depth_ext}"
-        depth_path = os.path.join(depth_dir, f"{stem}{depth_ext}")
-        _ensure_dir(os.path.dirname(depth_path))
+        depth_path = os.path.join(depth_dir, f"{base}.png")
         cv2.imwrite(depth_path, depth_uint16)
 
         if args.save_npy:
-            npy_path = os.path.join(npy_dir, f"{stem}.npy")
-            _ensure_dir(os.path.dirname(npy_path))
-            np.save(npy_path, depth_m)
+            np.save(os.path.join(npy_dir, f"{base}.npy"), depth_m)
 
         if args.vis:
-            vis_ext = args.vis_ext if args.vis_ext is not None else in_ext
-            if not vis_ext:
-                vis_ext = ".jpg"
-            if not vis_ext.startswith("."):
-                vis_ext = f".{vis_ext}"
-            vis_path = os.path.join(vis_dir, f"{stem}{args.vis_suffix}{vis_ext}")
-            _ensure_dir(os.path.dirname(vis_path))
+            rgb_vis = cv2.resize(image, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+            normalization_stats = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
+            rgb_vis_t = TF.normalize(TF.to_tensor(rgb_vis), **normalization_stats)
             save_val_imgs_metric_values(
                 depth_out,
-                img_out,
-                os.path.basename(vis_path),
-                os.path.dirname(vis_path),
+                rgb_vis_t,
+                f"{base}_vis.jpg",
+                vis_dir,
                 active_mask=active_mask,
                 depth_max=args.vis_depth_max,
             )
@@ -573,12 +556,7 @@ if __name__ == "__main__":
     parser.add_argument("--out-dir", type=str, default='demo/output')
     parser.add_argument("--input-dir", type=str, default=None, help="Run custom folder inference when set.")
     parser.add_argument("--intrinsics", type=str, default=None, help="Camera intrinsics JSON for --input-dir mode.")
-    parser.add_argument("--glob", type=str, default=None, help="Optional glob pattern inside --input-dir (e.g. '*.jpg' or '**/*.jpg' with --recursive).")
-    parser.add_argument("--recursive", action="store_true", help="Recursively search --input-dir for images (enables '**' in --glob).")
-    parser.add_argument("--mirror-input-tree", action="store_true", help="Mirror input subfolders and filenames under --out-dir outputs.")
-    parser.add_argument("--depth-ext", type=str, default="png", help="Depth image extension for uint16 saving (e.g. 'png' or 'tiff').")
-    parser.add_argument("--vis-ext", type=str, default=None, help="Visualization image extension. Default: same as input extension.")
-    parser.add_argument("--vis-suffix", type=str, default="_vis", help="Suffix appended to visualization filename before extension.")
+    parser.add_argument("--glob", type=str, default=None, help="Optional glob pattern inside --input-dir (e.g. '*.jpg').")
     parser.add_argument("--fwd-sz", type=int, nargs=2, default=[576, 1024], metavar=("H", "W"), help="Model input patch size (H W).")
     parser.add_argument("--crop-wfov", type=float, default=None, help="Horizontal crop FoV in degrees. If omitted, inferred from fx and image width.")
     parser.add_argument("--crop-wfov-margin", type=float, default=10.0, help="Extra degrees added to inferred FoV.")
