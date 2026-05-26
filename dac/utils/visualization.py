@@ -332,6 +332,88 @@ def save_val_imgs_v3(
     combined_img = np.concatenate((rgb, pred_vis), axis=1)
     plt.imsave(os.path.join(save_dir, filename), combined_img)
     return combined_img
+
+
+def save_val_imgs_metric_values(
+    depth_pred: torch.tensor,
+    rgb: torch.tensor,
+    filename: str,
+    save_dir: str,
+    active_mask: torch.tensor = None,
+    depth_max: float = None,
+):
+    """
+    Save a visualization with a metric depth colorbar and numeric depth statistics (in meters).
+    """
+    mean = np.array([123.675, 116.28, 103.53])[:, np.newaxis, np.newaxis]
+    std = np.array([58.395, 57.12, 57.375])[:, np.newaxis, np.newaxis]
+
+    depth_pred_np = depth_pred.squeeze().cpu().numpy().astype(np.float32)
+    rgb_np = rgb.squeeze().cpu().numpy()
+    rgb_np = ((rgb_np * std) + mean).astype(np.uint8).transpose((1, 2, 0))
+
+    valid = np.isfinite(depth_pred_np) & (depth_pred_np > 0)
+    if active_mask is not None:
+        active_mask_np = active_mask.squeeze().cpu().numpy() > 0
+        valid = valid & active_mask_np
+
+    if not np.any(valid):
+        # Fallback: keep the old style visualization if no valid depth is available
+        return save_val_imgs_v3(0, depth_pred, rgb, filename, save_dir, active_mask=active_mask, depth_max=depth_max or 20)
+
+    depth_vis = depth_pred_np.copy()
+    depth_vis[~valid] = np.nan
+
+    vmin = 0.0
+    if depth_max is None:
+        vmax = float(np.nanpercentile(depth_vis, 99))
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = float(np.nanmax(depth_vis))
+    else:
+        vmax = float(depth_max)
+
+    cmap = cm.magma_r
+    if hasattr(cmap, "copy"):
+        cmap = cmap.copy()
+    try:
+        cmap.set_bad(color=(0, 0, 0, 1))
+    except Exception:
+        pass
+
+    stats_vals = depth_vis[np.isfinite(depth_vis)]
+    d_min = float(np.min(stats_vals))
+    d_med = float(np.median(stats_vals))
+    d_p95 = float(np.percentile(stats_vals, 95))
+    d_max = float(np.max(stats_vals))
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].imshow(rgb_np)
+    axes[0].axis("off")
+    axes[0].set_title("RGB")
+
+    im = axes[1].imshow(depth_vis, cmap=cmap, vmin=vmin, vmax=vmax)
+    axes[1].axis("off")
+    axes[1].set_title("Depth (meters)")
+
+    cbar = fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
+    cbar.set_label("meters")
+
+    axes[1].text(
+        0.02,
+        0.98,
+        f"min  {d_min:.3f} m\nmed  {d_med:.3f} m\np95  {d_p95:.3f} m\nmax  {d_max:.3f} m",
+        transform=axes[1].transAxes,
+        va="top",
+        ha="left",
+        color="white",
+        fontsize=10,
+        bbox=dict(facecolor="black", alpha=0.55, edgecolor="none", pad=4),
+    )
+
+    fig.tight_layout()
+    plt.savefig(os.path.join(save_dir, filename), dpi=200)
+    plt.close(fig)
+    return None
         
 def visualize_results(batch, preds, out_dir, config, data_dir, save_pcd=False, index=0):
     save_img_dir = os.path.join(out_dir, 'val_imgs')

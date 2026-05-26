@@ -25,7 +25,7 @@ from dac.models.idisc_erp import IDiscERP
 from dac.models.idisc import IDisc
 from dac.models.idisc_equi import IDiscEqui
 from dac.models.cnn_depth import CNNDepth
-from dac.utils.visualization import save_file_ply, save_val_imgs_v2, save_val_imgs_v3
+from dac.utils.visualization import save_file_ply, save_val_imgs_v2, save_val_imgs_metric_values
 from dac.utils.unproj_pcd import reconstruct_pcd, reconstruct_pcd_erp
 from dac.utils.erp_geometry import erp_patch_to_cam_fast, cam_to_erp_patch_fast, fisheye_mei_to_erp
 from dac.dataloders.dataset import resize_for_input
@@ -94,6 +94,8 @@ def _load_intrinsics_json(path: str) -> Dict[str, Any]:
         intr = json.load(f)
     if not isinstance(intr, dict):
         raise ValueError(f"Invalid intrinsics JSON: {path}")
+    if "dataset" not in intr:
+        intr["dataset"] = "custom"
     if "camera_model" not in intr:
         intr["camera_model"] = "PINHOLE"
     return intr
@@ -509,8 +511,7 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
             np.save(os.path.join(npy_dir, f"{base}.npy"), depth_m)
 
         if args.vis:
-            save_val_imgs_v3(
-                idx,
+            save_val_imgs_metric_values(
                 depth_out,
                 img_out,
                 f"{base}_vis.jpg",

@@ -172,7 +172,7 @@ python demo/demo_dac_outdoor.py \
 Outputs are saved under `--out-dir`:
 - `depth_uint16/*.png`: `depth_uint16 = depth[m] * depth_scale` (default `1000` for millimeters)
 - `depth_npy/*.npy`: float32 depth in meters (when `--save-npy`)
-- `vis/*_vis.jpg`: side-by-side RGB + depth visualization (when `--vis`)
+- `vis/*_vis.jpg`: RGB + depth heatmap with **meter colorbar and numeric stats** (when `--vis`)
 
 If your pinhole images are **not undistorted**, fill in the distortion coefficients in the intrinsics JSON and enable undistortion:
 
