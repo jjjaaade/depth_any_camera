@@ -154,6 +154,32 @@ We have provided a ready-to-run demo scripts in the `demo` folder. `demo/demo_da
 
 `demo/demo_dac_outdoor.py` similarly demonstrates how a single outdoor model handle different types of camera data, including kitti (perspective) and kitti360 (fisheye).
 
+### Custom outdoor (perspective/pinhole) images
+
+You can also run the outdoor model on a folder of your own perspective/pinhole images and save **metric (scale) depth maps**:
+
+```bash
+python demo/demo_dac_outdoor.py \
+  --config-file checkpoints/dac_swinl_outdoor.json \
+  --model-file checkpoints/dac_swinl_outdoor.pt \
+  --input-dir /path/to/your/images \
+  --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json \
+  --depth-scale 1000 \
+  --vis \
+  --save-npy
+```
+
+Outputs are saved under `--out-dir`:
+- `depth_uint16/*.png`: `depth_uint16 = depth[m] * depth_scale` (default `1000` for millimeters)
+- `depth_npy/*.npy`: float32 depth in meters (when `--save-npy`)
+- `vis/*_vis.jpg`: side-by-side RGB + depth visualization (when `--vis`)
+
+If your pinhole images are **not undistorted**, fill in the distortion coefficients in the intrinsics JSON and enable undistortion:
+
+```bash
+python demo/demo_dac_outdoor.py --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --undistort
+```
+
 Instead, we also provide demo script for dealing one sample, you may follow the following example command:
 
 ```bash
