@@ -13,7 +13,7 @@ import glob
 import json
 import math
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import numpy as np
 import cv2
@@ -181,11 +181,30 @@ def _undistort_pinhole_if_needed(image_rgb: np.ndarray, cam_params: Dict[str, An
         dtype=np.float32,
     )
 
+    use_optimal = bool(args.undistort_optimal) or float(args.undistort_alpha) == 0.0
     new_k = k_mat
-    if args.undistort_optimal:
-        new_k, _ = cv2.getOptimalNewCameraMatrix(k_mat, dist, (w, h), alpha=args.undistort_alpha, newImgSize=(w, h))
+    roi = (0, 0, w, h)
+    if use_optimal:
+        new_k, roi = cv2.getOptimalNewCameraMatrix(
+            k_mat, dist, (w, h), alpha=float(args.undistort_alpha), newImgSize=(w, h)
+        )
 
-    undistorted = cv2.undistort(image_rgb, k_mat, dist, None, new_k)
+    undistorted_full = cv2.undistort(image_rgb, k_mat, dist, None, new_k)
+    if float(args.undistort_alpha) == 0.0 and use_optimal:
+        x, y, rw, rh = (int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]))
+        if rw > 0 and rh > 0:
+            x0 = max(0, min(w, x))
+            y0 = max(0, min(h, y))
+            x1 = max(0, min(w, x0 + rw))
+            y1 = max(0, min(h, y0 + rh))
+            undistorted = undistorted_full[y0:y1, x0:x1]
+            new_k = new_k.copy()
+            new_k[0, 2] -= float(x0)
+            new_k[1, 2] -= float(y0)
+        else:
+            undistorted = undistorted_full
+    else:
+        undistorted = undistorted_full
 
     updated = dict(cam_params)
     updated["fx"] = float(new_k[0, 0])
@@ -198,17 +217,40 @@ def _undistort_pinhole_if_needed(image_rgb: np.ndarray, cam_params: Dict[str, An
 
 def _undistort_pinhole(
     image_rgb: np.ndarray, cam_params: Dict[str, Any], args: argparse.Namespace
-) -> tuple[np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, Dict[str, Any], np.ndarray, np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
     """
     Undistort (OpenCV radtan) and return:
-        undistorted_image, updated_cam_params, K_raw, dist, K_new
+        undistorted_image, updated_cam_params, K_raw, dist, K_new, roi_xywh
     """
     k_raw, dist = _get_radtan_distortion(cam_params)
     h, w = image_rgb.shape[:2]
+    use_optimal = bool(args.undistort_optimal) or float(args.undistort_alpha) == 0.0
     k_new = k_raw
-    if args.undistort_optimal:
-        k_new, _ = cv2.getOptimalNewCameraMatrix(k_raw, dist, (w, h), alpha=args.undistort_alpha, newImgSize=(w, h))
-    undistorted = cv2.undistort(image_rgb, k_raw, dist, None, k_new)
+    roi = (0, 0, w, h)
+    if use_optimal:
+        k_new, roi = cv2.getOptimalNewCameraMatrix(
+            k_raw, dist, (w, h), alpha=float(args.undistort_alpha), newImgSize=(w, h)
+        )
+
+    undistorted_full = cv2.undistort(image_rgb, k_raw, dist, None, k_new)
+    if float(args.undistort_alpha) == 0.0 and use_optimal:
+        x, y, rw, rh = (int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]))
+        if rw > 0 and rh > 0:
+            x0 = max(0, min(w, x))
+            y0 = max(0, min(h, y))
+            x1 = max(0, min(w, x0 + rw))
+            y1 = max(0, min(h, y0 + rh))
+            undistorted = undistorted_full[y0:y1, x0:x1]
+            k_new = k_new.copy()
+            k_new[0, 2] -= float(x0)
+            k_new[1, 2] -= float(y0)
+            roi_xywh = (x0, y0, x1 - x0, y1 - y0)
+        else:
+            undistorted = undistorted_full
+            roi_xywh = (0, 0, w, h)
+    else:
+        undistorted = undistorted_full
+        roi_xywh = (0, 0, w, h)
 
     updated = dict(cam_params)
     updated["fx"] = float(k_new[0, 0])
@@ -216,7 +258,7 @@ def _undistort_pinhole(
     updated["cx"] = float(k_new[0, 2])
     updated["cy"] = float(k_new[1, 2])
     updated["camera_model"] = "PINHOLE"
-    return undistorted, updated, k_raw, dist, k_new
+    return undistorted, updated, k_raw, dist, k_new, roi_xywh
 
 
 def _build_distorted_to_undistorted_map(k_raw: np.ndarray, dist: np.ndarray, k_new: np.ndarray, out_h: int, out_w: int) -> tuple[np.ndarray, np.ndarray]:
@@ -427,7 +469,8 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
 
     Notes:
         - Output uint16 PNG: depth_uint16 = depth[m] * args.depth_scale
-        - Also supports optional undistortion for distorted pinhole images (OpenCV radtan).
+        - When undistorting with OpenCV radtan, outputs (depth + visualizations) are kept in the undistorted image coordinates.
+        - When `--undistort-alpha 0` (default), the undistorted image is additionally cropped to the valid ROI.
     """
     if args.intrinsics is None:
         raise ValueError("--intrinsics is required for --input-dir mode")
@@ -467,8 +510,6 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         raise ValueError("--output-downscale must be > 0")
 
     print(f"Found {len(image_paths)} images in {input_dir}")
-    distort_map_x = None
-    distort_map_y = None
     for idx, image_path in enumerate(image_paths):
         image_raw = np.asarray(Image.open(image_path))
         if image_raw.ndim == 2:
@@ -476,21 +517,17 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         if image_raw.shape[2] == 4:
             image_raw = image_raw[:, :, :3]
 
-        org_img_h, org_img_w = image_raw.shape[:2]
-
         k_raw, dist = _get_radtan_distortion(cam_params_base)
         has_dist = _has_nonzero_distortion(dist)
         if has_dist:
             if not args.undistort:
-                print(f"[WARN] Detected non-zero pinhole distortion in intrinsics; undistorting for inference and remapping depth back for: {os.path.basename(image_path)}")
-            image, cam_params, k_raw, dist, k_new = _undistort_pinhole(image_raw, cam_params_base, args)
-            if distort_map_x is None or distort_map_y is None or distort_map_x.shape[:2] != (int(org_img_h / args.output_downscale), int(org_img_w / args.output_downscale)):
-                out_h_tmp = int(org_img_h / args.output_downscale)
-                out_w_tmp = int(org_img_w / args.output_downscale)
-                distort_map_x, distort_map_y = _build_distorted_to_undistorted_map(k_raw, dist, k_new, out_h_tmp, out_w_tmp)
+                print(f"[WARN] Detected non-zero pinhole distortion in intrinsics; undistorting for inference (outputs stay in undistorted coordinates): {os.path.basename(image_path)}")
+            image, cam_params, _, _, _, _ = _undistort_pinhole(image_raw, cam_params_base, args)
         else:
             image = image_raw
             cam_params = cam_params_base
+
+        org_img_h, org_img_w = image.shape[:2]
 
         # Dummy "gt depth" only to reuse the existing ERP conversion pipeline.
         depth_dummy = np.ones((image.shape[0], image.shape[1], 1), dtype=np.float32)
@@ -587,9 +624,6 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
 
         depth_m = depth_out.squeeze().numpy().astype(np.float32)
         active_mask_np = active_mask.squeeze().numpy().astype(np.float32)
-        if has_dist and distort_map_x is not None:
-            depth_m = cv2.remap(depth_m, distort_map_x, distort_map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            active_mask_np = cv2.remap(active_mask_np, distort_map_x, distort_map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
         depth_uint16 = np.clip(depth_m * float(args.depth_scale), 0, 65535).astype(np.uint16)
         depth_path = os.path.join(depth_dir, f"{base}.png")
@@ -599,7 +633,7 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
             np.save(os.path.join(npy_dir, f"{base}.npy"), depth_m)
 
         if args.vis:
-            rgb_vis = cv2.resize(image_raw, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+            rgb_vis = cv2.resize(image, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
             normalization_stats = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
             rgb_vis_t = TF.normalize(TF.to_tensor(rgb_vis), **normalization_stats)
             depth_vis_t = torch.from_numpy(depth_m).unsqueeze(0)
