@@ -159,7 +159,7 @@ We have provided a ready-to-run demo scripts in the `demo` folder. `demo/demo_da
 You can also run the outdoor model on a folder of your own perspective/pinhole images and save **metric (scale) depth maps**:
 
 ```bash
-python demo/demo_dac_outdoor.py \
+python demo/demo_dac_custom_outdoor.py \
   --config-file checkpoints/dac_swinl_outdoor.json \
   --model-file checkpoints/dac_swinl_outdoor.pt \
   --input-dir /path/to/your/images \
@@ -177,13 +177,7 @@ Outputs are saved under `--out-dir`:
 If your pinhole images are **not undistorted**, fill in the distortion coefficients in the intrinsics JSON and enable undistortion:
 
 ```bash
-python demo/demo_dac_outdoor.py --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --undistort
-```
-
-If your `--config-file` uses a **pinhole-only non-ERP** model (e.g. `"model_name": "IDisc"`), you can also **skip the ERP conversion** and run inference directly on the pinhole image:
-
-```bash
-python demo/demo_dac_outdoor.py --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --skip-erp
+python demo/demo_dac_custom_outdoor.py --config-file checkpoints/dac_swinl_outdoor.json --model-file checkpoints/dac_swinl_outdoor.pt --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --undistort
 ```
 
 Instead, we also provide demo script for dealing one sample, you may follow the following example command:
