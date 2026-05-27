@@ -180,6 +180,24 @@ If your pinhole images are **not undistorted**, fill in the distortion coefficie
 python demo/demo_dac_custom_outdoor.py --config-file checkpoints/dac_swinl_outdoor.json --model-file checkpoints/dac_swinl_outdoor.pt --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --undistort
 ```
 
+### Custom outdoor batch (txt + per-folder calibration yml)
+
+For a batch workflow where input directories are listed in a txt file and each directory uses a plate-based calibration folder, use:
+
+```bash
+python demo/run_dac_custom_outdoor_batch.py \
+  --config-file checkpoints/dac_swinl_outdoor.json \
+  --model-file checkpoints/dac_swinl_outdoor.pt \
+  --root-prefix /abs/path/to/data_root \
+  --txt-path /abs/path/to/dirs.txt \
+  --calib-dir /abs/path/to/calib_root \
+  --recursive \
+  --depth-scale 1000 \
+  --vis-ratio 0.02
+```
+
+Depth outputs are written to each image's `depth/` folder as uint16 PNG (`depth[m] * depth_scale`). Visualizations are randomly sampled by `--vis-ratio` and saved under `depth/vis/` and `depth/vis_overlay/`.
+
 Instead, we also provide demo script for dealing one sample, you may follow the following example command:
 
 ```bash
