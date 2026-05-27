@@ -180,6 +180,12 @@ If your pinhole images are **not undistorted**, fill in the distortion coefficie
 python demo/demo_dac_outdoor.py --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --undistort
 ```
 
+If your `--config-file` uses a **pinhole-only non-ERP** model (e.g. `"model_name": "IDisc"`), you can also **skip the ERP conversion** and run inference directly on the pinhole image:
+
+```bash
+python demo/demo_dac_outdoor.py --input-dir /path/to/your/images --intrinsics demo/input/custom_pinhole_1920x1080_intrinsics.json --skip-erp
+```
+
 Instead, we also provide demo script for dealing one sample, you may follow the following example command:
 
 ```bash

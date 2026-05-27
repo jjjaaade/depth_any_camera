@@ -471,6 +471,7 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         - Output uint16 PNG: depth_uint16 = depth[m] * args.depth_scale
         - When undistorting with OpenCV radtan, outputs (depth + visualizations) are kept in the undistorted image coordinates.
         - When `--undistort-alpha 0` (default), the undistorted image is additionally cropped to the valid ROI.
+        - When `--skip-erp` is set (pinhole models only), inference runs directly on the (optionally undistorted) pinhole image without ERP conversion.
     """
     if args.intrinsics is None:
         raise ValueError("--intrinsics is required for --input-dir mode")
@@ -528,102 +529,142 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
             cam_params = cam_params_base
 
         org_img_h, org_img_w = image.shape[:2]
-
-        # Dummy "gt depth" only to reuse the existing ERP conversion pipeline.
-        depth_dummy = np.ones((image.shape[0], image.shape[1], 1), dtype=np.float32)
-        mask_valid_depth = np.ones_like(depth_dummy, dtype=np.float32)
-
-        crop_wfov = args.crop_wfov
-        if crop_wfov is None:
-            crop_wfov = _infer_crop_wfov_deg(cam_params, org_img_w, default_deg=100.0, margin_deg=args.crop_wfov_margin)
-
-        phi = np.array(0).astype(np.float32)
-        roll = np.array(0).astype(np.float32)
-        theta = 0
-
-        image_f = image.astype(np.float32) / 255.0
-
-        crop_width = int(cano_sz[0] * crop_wfov / 180.0)
-        crop_height = int(crop_width * fwd_sz[0] / fwd_sz[1])
-
-        # convert to ERP patch
-        image_erp, depth_erp, _, erp_mask, latitude, longitude = cam_to_erp_patch_fast(
-            image_f,
-            depth_dummy,
-            mask_valid_depth,
-            theta,
-            phi,
-            crop_height,
-            crop_width,
-            cano_sz[0],
-            cano_sz[0] * 2,
-            cam_params,
-            roll,
-            scale_fac=None,
-        )
-
-        lat_range = torch.tensor([float(np.min(latitude)), float(np.max(latitude))])
-        long_range = torch.tensor([float(np.min(longitude)), float(np.max(longitude))])
-
-        # resizing process to fwd_sz.
-        image_erp, depth_erp, _, pred_scale_factor, attn_mask = resize_for_input(
-            (image_erp * 255.0).astype(np.uint8),
-            depth_erp,
-            fwd_sz,
-            None,
-            [image_erp.shape[0], image_erp.shape[1]],
-            1.0,
-            padding_rgb=[0, 0, 0],
-            mask=erp_mask,
-        )
-
-        normalization_stats = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
-        image_t = TF.normalize(TF.to_tensor(image_erp), **normalization_stats)
-        attn_mask_t = TF.to_tensor((attn_mask > 0).astype(np.float32))
-
-        batch = {
-            "image": image_t.unsqueeze(0),
-            "gt": TF.to_tensor(depth_erp).unsqueeze(0),
-            "mask": TF.to_tensor((depth_erp > 0.01).astype(np.uint8)).unsqueeze(0),
-            "attn_mask": attn_mask_t.unsqueeze(0),
-            "lat_range": lat_range.unsqueeze(0),
-            "long_range": long_range.unsqueeze(0),
-            "info": {"pred_scale_factor": pred_scale_factor},
-        }
-
-        with torch.no_grad():
-            if model_name == "IDiscERP":
-                preds, _, _ = model(batch["image"].to(device), batch["lat_range"].to(device), batch["long_range"].to(device))
-            else:
-                preds, _, _ = model(batch["image"].to(device))
-        preds *= pred_scale_factor
-
-        # convert ERP patch output back to camera image coordinates.
-        erp_h = cano_sz[0] * batch["info"]["pred_scale_factor"]
-        if "f_align_factor" in batch["info"]:
-            erp_h = erp_h / batch["info"]["f_align_factor"][0].detach().cpu().numpy()
-
         out_h = int(org_img_h / args.output_downscale)
         out_w = int(org_img_w / args.output_downscale)
-        img_out, depth_out, _, active_mask = erp_patch_to_cam_fast(
-            batch["image"][0],
-            preds[0].detach().cpu(),
-            batch["attn_mask"][0],
-            0.0,
-            0.0,
-            out_h=out_h,
-            out_w=out_w,
-            erp_h=erp_h,
-            erp_w=erp_h * 2,
-            cam_params=cam_params,
-            fisheye_grid2ray=None,
-            depth_erp_gt=None,
-        )
-
         base = os.path.splitext(os.path.basename(image_path))[0]
 
-        depth_m = depth_out.squeeze().numpy().astype(np.float32)
-        active_mask_np = active_mask.squeeze().numpy().astype(np.float32)
+        if args.skip_erp:
+            if model_name == "IDiscERP":
+                raise ValueError("--skip-erp is only supported for non-ERP models (e.g. IDisc/CNNDepth), not IDiscERP")
+
+            # Direct pinhole inference without ERP conversion.
+            image_uint8 = image.astype(np.uint8)
+            depth_dummy = np.zeros((org_img_h, org_img_w, 1), dtype=np.float32)
+            image_in, _, pad, pred_scale_factor = resize_for_input(
+                image_uint8,
+                depth_dummy,
+                fwd_sz,
+                None,
+                [org_img_h, org_img_w],
+                1.0,
+                padding_rgb=[0, 0, 0],
+            )
+
+            normalization_stats = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
+            image_t = TF.normalize(TF.to_tensor(image_in), **normalization_stats)
+            with torch.no_grad():
+                preds, _, _ = model(image_t.unsqueeze(0).to(device))
+            preds *= pred_scale_factor
+
+            depth_pad = preds[0, 0].detach().cpu().numpy().astype(np.float32)
+            pad_top, pad_bottom, pad_left, pad_right = [int(x) for x in pad]
+            h_pad, w_pad = depth_pad.shape[:2]
+            y0 = max(0, min(h_pad, pad_top))
+            y1 = max(0, min(h_pad, h_pad - pad_bottom))
+            x0 = max(0, min(w_pad, pad_left))
+            x1 = max(0, min(w_pad, w_pad - pad_right))
+            if y1 <= y0 or x1 <= x0:
+                depth_crop = depth_pad
+                active_mask_crop = np.ones_like(depth_pad, dtype=np.float32)
+            else:
+                depth_crop = depth_pad[y0:y1, x0:x1]
+                active_mask_crop = np.ones_like(depth_crop, dtype=np.float32)
+
+            depth_m = cv2.resize(depth_crop, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+            active_mask_np = cv2.resize(active_mask_crop, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+
+        else:
+            # Dummy "gt depth" only to reuse the existing ERP conversion pipeline.
+            depth_dummy = np.ones((image.shape[0], image.shape[1], 1), dtype=np.float32)
+            mask_valid_depth = np.ones_like(depth_dummy, dtype=np.float32)
+
+            crop_wfov = args.crop_wfov
+            if crop_wfov is None:
+                crop_wfov = _infer_crop_wfov_deg(cam_params, org_img_w, default_deg=100.0, margin_deg=args.crop_wfov_margin)
+
+            phi = np.array(0).astype(np.float32)
+            roll = np.array(0).astype(np.float32)
+            theta = 0
+
+            image_f = image.astype(np.float32) / 255.0
+
+            crop_width = int(cano_sz[0] * crop_wfov / 180.0)
+            crop_height = int(crop_width * fwd_sz[0] / fwd_sz[1])
+
+            # convert to ERP patch
+            image_erp, depth_erp, _, erp_mask, latitude, longitude = cam_to_erp_patch_fast(
+                image_f,
+                depth_dummy,
+                mask_valid_depth,
+                theta,
+                phi,
+                crop_height,
+                crop_width,
+                cano_sz[0],
+                cano_sz[0] * 2,
+                cam_params,
+                roll,
+                scale_fac=None,
+            )
+
+            lat_range = torch.tensor([float(np.min(latitude)), float(np.max(latitude))])
+            long_range = torch.tensor([float(np.min(longitude)), float(np.max(longitude))])
+
+            # resizing process to fwd_sz.
+            image_erp, depth_erp, _, pred_scale_factor, attn_mask = resize_for_input(
+                (image_erp * 255.0).astype(np.uint8),
+                depth_erp,
+                fwd_sz,
+                None,
+                [image_erp.shape[0], image_erp.shape[1]],
+                1.0,
+                padding_rgb=[0, 0, 0],
+                mask=erp_mask,
+            )
+
+            normalization_stats = {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]}
+            image_t = TF.normalize(TF.to_tensor(image_erp), **normalization_stats)
+            attn_mask_t = TF.to_tensor((attn_mask > 0).astype(np.float32))
+
+            batch = {
+                "image": image_t.unsqueeze(0),
+                "gt": TF.to_tensor(depth_erp).unsqueeze(0),
+                "mask": TF.to_tensor((depth_erp > 0.01).astype(np.uint8)).unsqueeze(0),
+                "attn_mask": attn_mask_t.unsqueeze(0),
+                "lat_range": lat_range.unsqueeze(0),
+                "long_range": long_range.unsqueeze(0),
+                "info": {"pred_scale_factor": pred_scale_factor},
+            }
+
+            with torch.no_grad():
+                if model_name == "IDiscERP":
+                    preds, _, _ = model(batch["image"].to(device), batch["lat_range"].to(device), batch["long_range"].to(device))
+                else:
+                    preds, _, _ = model(batch["image"].to(device))
+            preds *= pred_scale_factor
+
+            # convert ERP patch output back to camera image coordinates.
+            erp_h = cano_sz[0] * batch["info"]["pred_scale_factor"]
+            if "f_align_factor" in batch["info"]:
+                erp_h = erp_h / batch["info"]["f_align_factor"][0].detach().cpu().numpy()
+
+            img_out, depth_out, _, active_mask = erp_patch_to_cam_fast(
+                batch["image"][0],
+                preds[0].detach().cpu(),
+                batch["attn_mask"][0],
+                0.0,
+                0.0,
+                out_h=out_h,
+                out_w=out_w,
+                erp_h=erp_h,
+                erp_w=erp_h * 2,
+                cam_params=cam_params,
+                fisheye_grid2ray=None,
+                depth_erp_gt=None,
+            )
+
+            depth_m = depth_out.squeeze().numpy().astype(np.float32)
+            active_mask_np = active_mask.squeeze().numpy().astype(np.float32)
 
         depth_uint16 = np.clip(depth_m * float(args.depth_scale), 0, 65535).astype(np.uint16)
         depth_path = os.path.join(depth_dir, f"{base}.png")
@@ -691,6 +732,7 @@ if __name__ == "__main__":
     parser.add_argument("--undistort", action="store_true", help="Undistort input images using k1,k2,p1,p2,k3 from --intrinsics (OpenCV radtan).")
     parser.add_argument("--undistort-optimal", action="store_true", help="Use getOptimalNewCameraMatrix for undistortion.")
     parser.add_argument("--undistort-alpha", type=float, default=0.0, help="Alpha for getOptimalNewCameraMatrix (0=crop, 1=keep all pixels).")
+    parser.add_argument("--skip-erp", action="store_true", help="(Pinhole only) Skip ERP conversion and run inference directly on the input image. Supported for non-ERP models such as IDisc/CNNDepth.")
     # parser.add_argument("--save-pcd", action="store_true")
 
     args = parser.parse_args()
