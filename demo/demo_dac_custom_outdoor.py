@@ -78,6 +78,90 @@ def _get_radtan_distortion(cam_params: Dict[str, Any]) -> tuple[np.ndarray, np.n
 def _has_nonzero_distortion(dist: np.ndarray, eps: float = 1e-12) -> bool:
     return bool(np.any(np.abs(dist.astype(np.float64)) > eps))
 
+def undistort_image(image_bgr: np.ndarray, camera_mat: np.ndarray, dist_coeff: np.ndarray) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]]:
+    """
+    Undistort an image using OpenCV radtan model.
+
+    Uses `getOptimalNewCameraMatrix(..., alpha=0.0)` and additionally crops to the returned ROI
+    so the output has no black borders and intrinsics are adjusted accordingly.
+
+    Returns:
+        img_undistort_bgr, optimal_intrinsic (cropped), roi_xywh in the original image.
+    """
+    h, w = image_bgr.shape[:2]
+    optimal_intrinsic, roi = cv2.getOptimalNewCameraMatrix(
+        np.array(camera_mat, dtype=np.float32),
+        np.array(dist_coeff, dtype=np.float32),
+        (int(w), int(h)),
+        alpha=0.0,
+        newImgSize=(int(w), int(h)),
+    )
+    img_undistort_full = cv2.undistort(
+        image_bgr,
+        np.array(camera_mat, dtype=np.float32),
+        np.array(dist_coeff, dtype=np.float32),
+        None,
+        optimal_intrinsic,
+    )
+
+    x, y, rw, rh = (int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]))
+    if rw > 0 and rh > 0:
+        x0 = max(0, min(w, x))
+        y0 = max(0, min(h, y))
+        x1 = max(0, min(w, x0 + rw))
+        y1 = max(0, min(h, y0 + rh))
+        img_undistort = img_undistort_full[y0:y1, x0:x1]
+        optimal_intrinsic = optimal_intrinsic.copy()
+        optimal_intrinsic[0, 2] -= float(x0)
+        optimal_intrinsic[1, 2] -= float(y0)
+        roi_xywh = (x0, y0, x1 - x0, y1 - y0)
+    else:
+        img_undistort = img_undistort_full
+        roi_xywh = (0, 0, w, h)
+
+    return img_undistort, optimal_intrinsic.astype(np.float32), roi_xywh
+
+
+def _infer_fov_deg_from_focal(focal_px: float, size_px: int) -> float:
+    return 2.0 * math.degrees(math.atan(float(size_px) / (2.0 * float(focal_px))))
+
+
+def _save_depth_overlay_bgr(
+    rgb_bgr: np.ndarray,
+    depth_m: np.ndarray,
+    active_mask: np.ndarray,
+    out_path: str,
+    *,
+    depth_max: Optional[float] = None,
+    overlay_alpha: float = 0.55,
+) -> None:
+    if rgb_bgr.ndim != 3 or rgb_bgr.shape[2] != 3:
+        raise ValueError("rgb_bgr must be HxWx3")
+    if depth_m.shape[:2] != rgb_bgr.shape[:2]:
+        raise ValueError("depth_m must match rgb size")
+
+    valid = np.isfinite(depth_m) & (depth_m > 0)
+    if active_mask is not None:
+        valid = valid & (active_mask > 0)
+    if not np.any(valid):
+        cv2.imwrite(out_path, rgb_bgr)
+        return
+
+    if depth_max is None:
+        depth_max = float(np.percentile(depth_m[valid], 99))
+    depth_max = max(1e-6, float(depth_max))
+
+    depth_vis = depth_m.copy()
+    depth_vis[~valid] = 0.0
+    depth_u8 = np.clip(depth_vis / depth_max * 255.0, 0.0, 255.0).astype(np.uint8)
+
+    heat_bgr = cv2.applyColorMap(depth_u8, cv2.COLORMAP_MAGMA)
+    heat_bgr[~valid] = 0
+
+    blended = rgb_bgr.copy()
+    blended[valid] = (rgb_bgr[valid] * (1.0 - overlay_alpha) + heat_bgr[valid] * overlay_alpha).astype(np.uint8)
+    cv2.imwrite(out_path, blended)
+
 
 def _infer_crop_wfov_deg(cam_params: Dict[str, Any], img_w: int, default_deg: float = 100.0, margin_deg: float = 10.0) -> float:
     fx = cam_params.get("fx", None)
@@ -102,32 +186,10 @@ def _undistort_pinhole(image_rgb: np.ndarray, cam_params: Dict[str, Any], args: 
         undistorted_image, updated_cam_params
     """
     k_raw, dist = _get_radtan_distortion(cam_params)
-    h, w = image_rgb.shape[:2]
-
-    use_optimal = bool(args.undistort_optimal) or float(args.undistort_alpha) == 0.0
-    k_new = k_raw
-    roi = (0, 0, w, h)
-    if use_optimal:
-        k_new, roi = cv2.getOptimalNewCameraMatrix(
-            k_raw, dist, (w, h), alpha=float(args.undistort_alpha), newImgSize=(w, h)
-        )
-
-    undistorted_full = cv2.undistort(image_rgb, k_raw, dist, None, k_new)
-    if float(args.undistort_alpha) == 0.0 and use_optimal:
-        x, y, rw, rh = (int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]))
-        if rw > 0 and rh > 0:
-            x0 = max(0, min(w, x))
-            y0 = max(0, min(h, y))
-            x1 = max(0, min(w, x0 + rw))
-            y1 = max(0, min(h, y0 + rh))
-            undistorted = undistorted_full[y0:y1, x0:x1]
-            k_new = k_new.copy()
-            k_new[0, 2] -= float(x0)
-            k_new[1, 2] -= float(y0)
-        else:
-            undistorted = undistorted_full
-    else:
-        undistorted = undistorted_full
+    # keep legacy flags, but always use alpha=0 ROI crop for stable downstream geometry
+    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    undist_bgr, k_new, _ = undistort_image(image_bgr, k_raw, dist)
+    undistorted = cv2.cvtColor(undist_bgr, cv2.COLOR_BGR2RGB)
 
     updated = dict(cam_params)
     updated["fx"] = float(k_new[0, 0])
@@ -162,11 +224,13 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
     depth_dir = os.path.join(args.out_dir, "depth_uint16")
     npy_dir = os.path.join(args.out_dir, "depth_npy")
     vis_dir = os.path.join(args.out_dir, "vis")
+    overlay_dir = os.path.join(args.out_dir, "vis_overlay")
     _ensure_dir(depth_dir)
     if args.save_npy:
         _ensure_dir(npy_dir)
     if args.vis:
         _ensure_dir(vis_dir)
+        _ensure_dir(overlay_dir)
 
     image_paths = _iter_image_paths(args.input_dir, args.glob)
     if not image_paths:
@@ -203,9 +267,16 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         depth_dummy = np.ones((org_img_h, org_img_w, 1), dtype=np.float32)
         mask_valid_depth = np.ones_like(depth_dummy, dtype=np.float32)
 
-        crop_wfov = args.crop_wfov
+        # Derive crop sizes from the (optimized) intrinsics after undistortion/cropping.
+        crop_wfov = float(args.crop_wfov) if args.crop_wfov is not None else None
+        crop_vfov = float(args.crop_vfov) if args.crop_vfov is not None else None
         if crop_wfov is None:
-            crop_wfov = _infer_crop_wfov_deg(cam_params, org_img_w, default_deg=100.0, margin_deg=args.crop_wfov_margin)
+            crop_wfov = _infer_fov_deg_from_focal(float(cam_params["fx"]), int(org_img_w)) + float(args.crop_wfov_margin)
+        if crop_vfov is None:
+            crop_vfov = _infer_fov_deg_from_focal(float(cam_params["fy"]), int(org_img_h)) + float(args.crop_vfov_margin)
+
+        crop_wfov = float(min(179.0, max(10.0, crop_wfov)))
+        crop_vfov = float(min(179.0, max(10.0, crop_vfov)))
 
         phi = np.array(0).astype(np.float32)
         roll = np.array(0).astype(np.float32)
@@ -213,8 +284,10 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
 
         image_f = image.astype(np.float32) / 255.0
 
-        crop_width = int(cano_sz[0] * crop_wfov / 180.0)
-        crop_height = int(crop_width * fwd_sz[0] / fwd_sz[1])
+        crop_width = int(round(cano_sz[0] * crop_wfov / 180.0))
+        crop_height = int(round(cano_sz[0] * crop_vfov / 180.0))
+        crop_width = max(16, crop_width)
+        crop_height = max(16, crop_height)
 
         # Undistorted pinhole -> ERP patch (model input)
         image_erp, depth_erp, _, erp_mask, latitude, longitude = cam_to_erp_patch_fast(
@@ -303,6 +376,17 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
                 active_mask=active_mask_t_vis,
                 depth_max=args.vis_depth_max,
             )
+            # Overlay depth on the (undistorted) RGB image to visually inspect alignment.
+            rgb_vis_bgr = cv2.cvtColor(rgb_vis, cv2.COLOR_RGB2BGR)
+            overlay_path = os.path.join(overlay_dir, f"{base}_overlay.jpg")
+            _save_depth_overlay_bgr(
+                rgb_vis_bgr,
+                depth_m,
+                active_mask_np,
+                overlay_path,
+                depth_max=args.vis_depth_max,
+                overlay_alpha=float(args.overlay_alpha),
+            )
 
         if (idx + 1) % 20 == 0 or (idx + 1) == len(image_paths):
             print(f"[{idx+1}/{len(image_paths)}] saved {depth_path}")
@@ -328,14 +412,17 @@ if __name__ == "__main__":
     parser.add_argument("--glob", type=str, default=None, help="Optional glob pattern inside --input-dir (e.g. '*.jpg').")
 
     parser.add_argument("--fwd-sz", type=int, nargs=2, default=[576, 1024], metavar=("H", "W"), help="Model input patch size (H W).")
-    parser.add_argument("--crop-wfov", type=float, default=None, help="Horizontal crop FoV in degrees. If omitted, inferred from fx and image width.")
-    parser.add_argument("--crop-wfov-margin", type=float, default=10.0, help="Extra degrees added to inferred FoV.")
+    parser.add_argument("--crop-wfov", type=float, default=None, help="Horizontal crop FoV in degrees. If omitted, inferred from optimized fx and undistorted width.")
+    parser.add_argument("--crop-vfov", type=float, default=None, help="Vertical crop FoV in degrees. If omitted, inferred from optimized fy and undistorted height.")
+    parser.add_argument("--crop-wfov-margin", type=float, default=10.0, help="Extra degrees added to inferred horizontal FoV.")
+    parser.add_argument("--crop-vfov-margin", type=float, default=2.0, help="Extra degrees added to inferred vertical FoV (helps avoid top/bottom arc cut).")
 
     parser.add_argument("--output-downscale", type=float, default=1.0, help="Downscale output depth resolution (e.g. 2 -> half-res).")
     parser.add_argument("--depth-scale", type=int, default=1000, help="Scale factor for uint16 depth PNG (depth[m] * depth_scale).")
     parser.add_argument("--save-npy", action="store_true", help="Also save float32 depth in meters as .npy.")
     parser.add_argument("--vis", action="store_true", help="Save RGB|depth visualization images.")
     parser.add_argument("--vis-depth-max", type=float, default=None, help="Visualization max depth (meters).")
+    parser.add_argument("--overlay-alpha", type=float, default=0.55, help="Alpha for depth overlay visualization.")
 
     parser.add_argument("--undistort", action="store_true", help="Enable undistortion using k1,k2,p1,p2,k3 from --intrinsics (OpenCV radtan).")
     parser.add_argument("--undistort-optimal", action="store_true", help="Use getOptimalNewCameraMatrix for undistortion.")
