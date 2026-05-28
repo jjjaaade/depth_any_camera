@@ -487,8 +487,19 @@ def _run_one_image(
         np.save(str(depth_npy_path), depth_m)
 
     if save_vis:
-        vis_dir = depth_dir / "vis"
-        overlay_dir = depth_dir / "vis_overlay"
+        if args.vis_out_dir:
+            vis_root = Path(args.vis_out_dir)
+            try:
+                rel_dir = image_path.parent.relative_to(Path(args.root_prefix))
+                vis_parent = vis_root / rel_dir
+            except Exception:
+                vis_parent = vis_root / image_path.parent.name
+            vis_dir = vis_parent / "vis"
+            overlay_dir = vis_parent / "vis_overlay"
+        else:
+            vis_dir = depth_dir / "vis"
+            overlay_dir = depth_dir / "vis_overlay"
+
         vis_dir.mkdir(parents=True, exist_ok=True)
         overlay_dir.mkdir(parents=True, exist_ok=True)
 
@@ -557,6 +568,12 @@ def main() -> None:
     parser.add_argument("--save-npy", action="store_true", help="Also save float32 depth in meters as .npy alongside PNG.")
 
     parser.add_argument("--vis-ratio", type=float, default=0.0, help="Random sample ratio for saving visualizations (0 disables).")
+    parser.add_argument(
+        "--vis-out-dir",
+        type=str,
+        default=None,
+        help="Optional directory to save visualizations (default: alongside each image under depth/vis).",
+    )
     parser.add_argument("--vis-seed", type=int, default=0, help="RNG seed for visualization sampling.")
     parser.add_argument("--vis-depth-max", type=float, default=None, help="Visualization max depth (meters).")
     parser.add_argument("--overlay-alpha", type=float, default=0.55, help="Alpha for depth overlay visualization.")

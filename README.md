@@ -195,10 +195,11 @@ python demo/run_dac_custom_outdoor_batch.py \
   --calib-dir /abs/path/to/calib_root \
   --recursive \
   --depth-scale 1000 \
-  --vis-ratio 0.02
+  --vis-ratio 0.02 \
+  --vis-out-dir /abs/path/to/vis_out
 ```
 
-Depth outputs are written to each image's `depth/` folder as uint16 PNG (`depth[m] * depth_scale`). Visualizations are randomly sampled by `--vis-ratio` and saved under `depth/vis/` and `depth/vis_overlay/`.
+Depth outputs are written to each image's `depth/` folder as uint16 PNG (`depth[m] * depth_scale`). Visualizations are randomly sampled by `--vis-ratio`; by default they are saved under `depth/vis/` and `depth/vis_overlay/`, or into `--vis-out-dir` when provided.
 
 Instead, we also provide demo script for dealing one sample, you may follow the following example command:
 
