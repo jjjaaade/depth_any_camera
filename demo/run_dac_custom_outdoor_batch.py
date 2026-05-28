@@ -50,7 +50,7 @@ CAM08_YAML_NAME = "camera08_2_right_front_m1"
 
 
 def read_relative_dirs(txt_path: str) -> List[str]:
-    rels: List[str] = []
+    rels = []
     with open(txt_path, "r", encoding="utf-8") as f:
         for line in f:
             s = line.strip()
@@ -61,8 +61,8 @@ def read_relative_dirs(txt_path: str) -> List[str]:
 
 
 def split_plate_list(plate_list: List[str]) -> Tuple[List[str], List[str]]:
-    char_plate_list: List[str] = []
-    num_plate_list: List[str] = []
+    char_plate_list = []
+    num_plate_list = []
     for p in plate_list:
         if not p.isdigit():
             char_plate_list.append(p)
@@ -150,7 +150,7 @@ def resolve_target_calib_dir(
 
 
 def read_calibration_files(target_calib_dir: Path) -> Dict[str, cv2.FileStorage]:
-    calibrations: Dict[str, cv2.FileStorage] = {}
+    calibrations = {}
     if not target_calib_dir:
         return calibrations
 
@@ -194,7 +194,7 @@ def list_candidate_images(
     exts: Set[str],
 ) -> List[Tuple[Path, str]]:
     files = input_dir.rglob("*") if recursive else input_dir.iterdir()
-    results: List[Tuple[Path, str]] = []
+    results = []
     for p in files:
         if not p.is_file():
             continue
@@ -370,7 +370,7 @@ def _run_one_image(
     undist_rgb = cv2.cvtColor(undist_bgr, cv2.COLOR_BGR2RGB)
 
     org_img_h, org_img_w = undist_rgb.shape[:2]
-    cam_params: Dict[str, Any] = {
+    cam_params = {
         "dataset": "custom",
         "camera_model": "PINHOLE",
         "fx": float(k_new[0, 0]),
@@ -590,9 +590,9 @@ def main() -> None:
     rel_dirs = read_relative_dirs(str(txt_path))
     abs_dirs = [root_prefix / rel for rel in rel_dirs]
 
-    missing_dirs: List[str] = []
-    missing_calib_dirs: List[str] = []
-    tasks_by_calib_dir: Dict[Path, List[Tuple[Path, str]]] = defaultdict(list)
+    missing_dirs = []
+    missing_calib_dirs = []
+    tasks_by_calib_dir = defaultdict(list)
     image_count = 0
 
     print("Scanning input directories and resolving calibrations...")
@@ -637,7 +637,7 @@ def main() -> None:
 
     print(f"Running inference on {image_count} images (grouped by {len(tasks_by_calib_dir)} calibration dirs)...")
     for target_calib_dir, items in tqdm(tasks_by_calib_dir.items(), desc="Calib groups", unit="group", dynamic_ncols=True):
-        calibrations: Dict[str, cv2.FileStorage] = {}
+        calibrations = {}
         try:
             calibrations = read_calibration_files(target_calib_dir)
             for image_path, cam_id in tqdm(items, desc=str(target_calib_dir.name), unit="img", dynamic_ncols=True, leave=False):

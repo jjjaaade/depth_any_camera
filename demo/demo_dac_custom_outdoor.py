@@ -214,7 +214,7 @@ def _undistort_pinhole(
 def _iter_image_paths(input_dir: str, pattern: Optional[str]) -> List[str]:
     if pattern is not None:
         return sorted(glob.glob(os.path.join(input_dir, pattern)))
-    image_paths: List[str] = []
+    image_paths = []
     for ext in SUPPORTED_IMAGE_EXTS:
         image_paths.extend(glob.glob(os.path.join(input_dir, f"*{ext}")))
     return sorted(image_paths)
