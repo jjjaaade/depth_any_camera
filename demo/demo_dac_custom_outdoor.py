@@ -15,7 +15,9 @@ import glob
 import json
 import math
 import os
-from typing import Any, Dict, Optional
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -24,11 +26,11 @@ import torch.cuda as tcuda
 import torchvision.transforms.functional as TF
 from PIL import Image
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from dac.dataloders.dataset import resize_for_input
-from dac.models.cnn_depth import CNNDepth
-from dac.models.idisc import IDisc
-from dac.models.idisc_erp import IDiscERP
-from dac.models.idisc_equi import IDiscEqui
 from dac.utils.erp_geometry import cam_to_erp_patch_fast, erp_patch_to_cam_fast
 from dac.utils.visualization import save_val_imgs_metric_values
 
@@ -51,7 +53,7 @@ def _load_intrinsics_json(path: str) -> Dict[str, Any]:
     return intr
 
 
-def _get_radtan_distortion(cam_params: Dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+def _get_radtan_distortion(cam_params: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
     required = ("fx", "fy", "cx", "cy")
     for k in required:
         if k not in cam_params:
@@ -78,7 +80,12 @@ def _get_radtan_distortion(cam_params: Dict[str, Any]) -> tuple[np.ndarray, np.n
 def _has_nonzero_distortion(dist: np.ndarray, eps: float = 1e-12) -> bool:
     return bool(np.any(np.abs(dist.astype(np.float64)) > eps))
 
-def undistort_image(image_bgr: np.ndarray, camera_mat: np.ndarray, dist_coeff: np.ndarray) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]]:
+
+def undistort_image(
+    image_bgr: np.ndarray,
+    camera_mat: np.ndarray,
+    dist_coeff: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int, int, int]]:
     """
     Undistort an image using OpenCV radtan model.
 
@@ -178,7 +185,11 @@ def _infer_crop_wfov_deg(cam_params: Dict[str, Any], img_w: int, default_deg: fl
     return float(min(179.0, max(10.0, hfov_deg + margin_deg)))
 
 
-def _undistort_pinhole(image_rgb: np.ndarray, cam_params: Dict[str, Any], args: argparse.Namespace) -> tuple[np.ndarray, Dict[str, Any]]:
+def _undistort_pinhole(
+    image_rgb: np.ndarray,
+    cam_params: Dict[str, Any],
+    args: argparse.Namespace,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Undistort (OpenCV radtan) and, when `--undistort-alpha 0`, crop to valid ROI.
 
@@ -200,10 +211,10 @@ def _undistort_pinhole(image_rgb: np.ndarray, cam_params: Dict[str, Any], args: 
     return undistorted, updated
 
 
-def _iter_image_paths(input_dir: str, pattern: Optional[str]) -> list[str]:
+def _iter_image_paths(input_dir: str, pattern: Optional[str]) -> List[str]:
     if pattern is not None:
         return sorted(glob.glob(os.path.join(input_dir, pattern)))
-    image_paths: list[str] = []
+    image_paths: List[str] = []
     for ext in SUPPORTED_IMAGE_EXTS:
         image_paths.extend(glob.glob(os.path.join(input_dir, f"*{ext}")))
     return sorted(image_paths)
@@ -356,6 +367,18 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
         depth_m = depth_out.squeeze().numpy().astype(np.float32)
         active_mask_np = active_mask.squeeze().numpy().astype(np.float32)
 
+        valid = np.isfinite(depth_m) & (depth_m > 0) & (active_mask_np > 0)
+        if np.any(valid):
+            max_depth_m = float(np.max(depth_m[valid]))
+            max_scaled = max_depth_m * float(args.depth_scale)
+            if max_scaled > 65535:
+                safe_scale = int(65535.0 / max(1e-6, max_depth_m))
+                print(
+                    f"[WARN] depth uint16 saturation risk: max_depth~{max_depth_m:.2f}m, "
+                    f"depth_scale={args.depth_scale} -> {max_scaled:.1f} (>65535). "
+                    f"Consider --depth-scale <= {safe_scale} (or enable --save-npy)."
+                )
+
         depth_uint16 = np.clip(depth_m * float(args.depth_scale), 0, 65535).astype(np.uint16)
         depth_path = os.path.join(depth_dir, f"{base}.png")
         cv2.imwrite(depth_path, depth_uint16)
@@ -392,10 +415,23 @@ def run_custom_folder(model, model_name: str, device, config: Dict[str, Any], ar
             print(f"[{idx+1}/{len(image_paths)}] saved {depth_path}")
 
 
+def _load_model(config: Dict[str, Any], model_file: str):
+    """
+    Lazily import model modules so `--help` works without optional compiled ops.
+    """
+    from dac.models.cnn_depth import CNNDepth  # noqa: F401
+    from dac.models.idisc import IDisc  # noqa: F401
+    from dac.models.idisc_erp import IDiscERP  # noqa: F401
+    from dac.models.idisc_equi import IDiscEqui  # noqa: F401
+
+    model = eval(config["model_name"]).build(config)
+    model.load_pretrained(model_file)
+    return model
+
+
 def main(config: Dict[str, Any], args: argparse.Namespace) -> None:
     device = torch.device("cuda") if tcuda.is_available() else torch.device("cpu")
-    model = eval(config["model_name"]).build(config)
-    model.load_pretrained(args.model_file)
+    model = _load_model(config, args.model_file)
     model = model.to(device)
     model.eval()
     run_custom_folder(model, config["model_name"], device, config, args)

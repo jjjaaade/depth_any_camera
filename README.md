@@ -174,6 +174,8 @@ Outputs are saved under `--out-dir`:
 - `depth_npy/*.npy`: float32 depth in meters (when `--save-npy`)
 - `vis/*_vis.jpg`: RGB + depth heatmap with **meter colorbar and numeric stats** (when `--vis`)
 
+Note on `uint16` range: if your scene maximum depth is about **150m**, then `depth_scale=1000` would produce values up to **150000**, exceeding `uint16` max `65535` (will saturate/clip). Use `depth_scale <= floor(65535 / max_depth_m)` (e.g. `--depth-scale 400` gives max ~163.8m with 2.5mm steps), or enable `--save-npy` to keep full float depth.
+
 If your pinhole images are **not undistorted**, fill in the distortion coefficients in the intrinsics JSON and enable undistortion:
 
 ```bash

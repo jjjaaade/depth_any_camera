@@ -19,7 +19,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -49,8 +49,8 @@ CAMERA_INFOS = {
 CAM08_YAML_NAME = "camera08_2_right_front_m1"
 
 
-def read_relative_dirs(txt_path: str) -> list[str]:
-    rels: list[str] = []
+def read_relative_dirs(txt_path: str) -> List[str]:
+    rels: List[str] = []
     with open(txt_path, "r", encoding="utf-8") as f:
         for line in f:
             s = line.strip()
@@ -60,9 +60,9 @@ def read_relative_dirs(txt_path: str) -> list[str]:
     return rels
 
 
-def split_plate_list(plate_list: list[str]) -> tuple[list[str], list[str]]:
-    char_plate_list: list[str] = []
-    num_plate_list: list[str] = []
+def split_plate_list(plate_list: List[str]) -> Tuple[List[str], List[str]]:
+    char_plate_list: List[str] = []
+    num_plate_list: List[str] = []
     for p in plate_list:
         if not p.isdigit():
             char_plate_list.append(p)
@@ -81,14 +81,14 @@ def normalize_plate_name(plate: Optional[str]) -> Optional[str]:
     return plate
 
 
-def build_plate_lists(calib_dir: str) -> tuple[list[str], list[str]]:
+def build_plate_lists(calib_dir: str) -> Tuple[List[str], List[str]]:
     plates_list = [
         name for name in os.listdir(calib_dir) if os.path.isdir(os.path.join(calib_dir, name))
     ]
     return split_plate_list(plates_list)
 
 
-def match_plate_from_path(path_str: str, char_plates_list: list[str], num_plates_list: list[str]) -> Optional[str]:
+def match_plate_from_path(path_str: str, char_plates_list: List[str], num_plates_list: List[str]) -> Optional[str]:
     parts = [p for p in re.split(r"[\\/]+", path_str) if p]
     part_set_lower = {p.lower() for p in parts}
 
@@ -112,15 +112,15 @@ def match_plate_from_path(path_str: str, char_plates_list: list[str], num_plates
 def resolve_target_calib_dir(
     dir_path: Path,
     calib_dir: Path,
-    char_plates_list: list[str],
-    num_plates_list: list[str],
+    char_plates_list: List[str],
+    num_plates_list: List[str],
 ) -> Optional[Path]:
     """
     Try to resolve plate from a json file in dir_path, then map to calib_dir/plate.
     Fallback to path matching if json/plate unavailable.
     """
     json_path = dir_path / (dir_path.name + ".json")
-    json_data: Optional[dict[str, Any]] = None
+    json_data: Optional[Dict[str, Any]] = None
 
     if json_path.exists():
         try:
@@ -149,8 +149,8 @@ def resolve_target_calib_dir(
     return None
 
 
-def read_calibration_files(target_calib_dir: Path) -> dict[str, cv2.FileStorage]:
-    calibrations: dict[str, cv2.FileStorage] = {}
+def read_calibration_files(target_calib_dir: Path) -> Dict[str, cv2.FileStorage]:
+    calibrations: Dict[str, cv2.FileStorage] = {}
     if not target_calib_dir:
         return calibrations
 
@@ -166,7 +166,7 @@ def read_calibration_files(target_calib_dir: Path) -> dict[str, cv2.FileStorage]
     return calibrations
 
 
-def release_calibrations(calibrations: dict[str, cv2.FileStorage]) -> None:
+def release_calibrations(calibrations: Dict[str, cv2.FileStorage]) -> None:
     for fs in calibrations.values():
         try:
             fs.release()
@@ -191,10 +191,10 @@ def list_candidate_images(
     input_dir: Path,
     recursive: bool,
     name_contains: Optional[str],
-    exts: set[str],
-) -> list[tuple[Path, str]]:
+    exts: Set[str],
+) -> List[Tuple[Path, str]]:
     files = input_dir.rglob("*") if recursive else input_dir.iterdir()
-    results: list[tuple[Path, str]] = []
+    results: List[Tuple[Path, str]] = []
     for p in files:
         if not p.is_file():
             continue
@@ -212,9 +212,9 @@ def list_candidate_images(
 
 
 def get_camera_calib_for_cam(
-    calibrations: dict[str, cv2.FileStorage],
+    calibrations: Dict[str, cv2.FileStorage],
     cam_id: str,
-) -> tuple[np.ndarray, np.ndarray, str]:
+) -> Tuple[np.ndarray, np.ndarray, str]:
     """
     cam08 must exist.
     other cams fallback to cam08 if missing.
@@ -238,7 +238,7 @@ def undistort_image(
     image_bgr: np.ndarray,
     camera_mat: np.ndarray,
     dist_coeff: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Undistort with alpha=0 ROI crop to remove black borders, and adjust intrinsics.
 
@@ -318,7 +318,7 @@ def _save_depth_overlay_bgr(
     cv2.imwrite(str(out_path), blended)
 
 
-def _load_model(config: dict[str, Any], model_file: str):
+def _load_model(config: Dict[str, Any], model_file: str):
     """
     Lazily import model modules so `--help` works without optional compiled ops.
     """
@@ -345,14 +345,14 @@ def _run_one_image(
     model,
     model_name: str,
     device,
-    config: dict[str, Any],
+    config: Dict[str, Any],
     image_path: Path,
     cam_id: str,
     camera_mat: np.ndarray,
     dist_coeff: np.ndarray,
     args: argparse.Namespace,
     save_vis: bool,
-) -> dict[str, Any]:
+) -> Dict[str, Any]:
     depth_dir = image_path.parent / "depth"
     depth_dir.mkdir(parents=True, exist_ok=True)
 
@@ -370,7 +370,7 @@ def _run_one_image(
     undist_rgb = cv2.cvtColor(undist_bgr, cv2.COLOR_BGR2RGB)
 
     org_img_h, org_img_w = undist_rgb.shape[:2]
-    cam_params: dict[str, Any] = {
+    cam_params: Dict[str, Any] = {
         "dataset": "custom",
         "camera_model": "PINHOLE",
         "fx": float(k_new[0, 0]),
@@ -472,6 +472,12 @@ def _run_one_image(
     depth_m = depth_out.squeeze().numpy().astype(np.float32)
     active_mask_np = active_mask.squeeze().numpy().astype(np.float32)
 
+    valid = np.isfinite(depth_m) & (depth_m > 0) & (active_mask_np > 0)
+    max_depth_m = float(np.max(depth_m[valid])) if np.any(valid) else 0.0
+    max_scaled = max_depth_m * float(args.depth_scale) if max_depth_m > 0 else 0.0
+    saturated = bool(max_scaled > 65535)
+    safe_scale = int(65535.0 / max(1e-6, max_depth_m)) if max_depth_m > 0 else None
+
     depth_uint16 = np.clip(depth_m * float(args.depth_scale), 0, 65535).astype(np.uint16)
     ok = cv2.imwrite(str(depth_png_path), depth_uint16)
     if not ok:
@@ -515,6 +521,9 @@ def _run_one_image(
         "image_path": str(image_path),
         "cam_id": cam_id,
         "depth_path": str(depth_png_path),
+        "saturated": saturated,
+        "max_depth_m": max_depth_m,
+        "safe_scale": safe_scale,
     }
 
 
@@ -581,9 +590,9 @@ def main() -> None:
     rel_dirs = read_relative_dirs(str(txt_path))
     abs_dirs = [root_prefix / rel for rel in rel_dirs]
 
-    missing_dirs: list[str] = []
-    missing_calib_dirs: list[str] = []
-    tasks_by_calib_dir: dict[Path, list[tuple[Path, str]]] = defaultdict(list)
+    missing_dirs: List[str] = []
+    missing_calib_dirs: List[str] = []
+    tasks_by_calib_dir: Dict[Path, List[Tuple[Path, str]]] = defaultdict(list)
     image_count = 0
 
     print("Scanning input directories and resolving calibrations...")
@@ -623,10 +632,12 @@ def main() -> None:
     skip_n = 0
     fail_n = 0
     vis_n = 0
+    saturated_n = 0
+    saturated_warn_n = 0
 
     print(f"Running inference on {image_count} images (grouped by {len(tasks_by_calib_dir)} calibration dirs)...")
     for target_calib_dir, items in tqdm(tasks_by_calib_dir.items(), desc="Calib groups", unit="group", dynamic_ncols=True):
-        calibrations: dict[str, cv2.FileStorage] = {}
+        calibrations: Dict[str, cv2.FileStorage] = {}
         try:
             calibrations = read_calibration_files(target_calib_dir)
             for image_path, cam_id in tqdm(items, desc=str(target_calib_dir.name), unit="img", dynamic_ncols=True, leave=False):
@@ -648,6 +659,15 @@ def main() -> None:
                 )
                 if result["status"] == "ok":
                     ok_n += 1
+                    if result.get("saturated"):
+                        saturated_n += 1
+                        if saturated_warn_n < 20:
+                            saturated_warn_n += 1
+                            print(
+                                f"[WARN] uint16 saturated after scaling: {result['image_path']} "
+                                f"(max_depth~{result.get('max_depth_m', 0.0):.2f}m, "
+                                f"depth_scale={args.depth_scale}, safe_scale<={result.get('safe_scale')})."
+                            )
                 elif result["status"] == "skip":
                     skip_n += 1
                 else:
@@ -655,7 +675,10 @@ def main() -> None:
         finally:
             release_calibrations(calibrations)
 
-    print(f"Done. ok={ok_n} skip={skip_n} fail={fail_n} vis_saved={vis_n}")
+    print(
+        f"Done. ok={ok_n} skip={skip_n} fail={fail_n} vis_saved={vis_n} "
+        f"saturated_images={saturated_n}"
+    )
 
 
 if __name__ == "__main__":
